@@ -66,11 +66,12 @@ async def attach_request_id(request: Request, call_next):
 from app.api import workspaces  # L1.3
 app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
 
-# from app.api import files    # L2.1
+from app.api import files  # L2.1
+app.include_router(files.router, tags=["files"])
+
 # from app.api import catalog  # L3.1
 # from app.api import query    # L5.4
 # from app.api import me       # L5.0
-# app.include_router(files.router, tags=["files"])
 # app.include_router(catalog.router, tags=["catalog"])
 # app.include_router(query.router, tags=["query"])
 # app.include_router(me.router, prefix="/me", tags=["me"])
