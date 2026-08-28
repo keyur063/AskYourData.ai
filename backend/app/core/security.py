@@ -1,20 +1,29 @@
 """
 JWT verification middleware for AskYourData.ai.
 
-Supabase issues standard JWTs for authenticated users. This module
-provides a FastAPI dependency (`require_user`) that:
-  1. Extracts the Bearer token from the Authorization header.
-  2. Verifies it by calling Supabase Auth's /user endpoint (no local
-     secret needed — Supabase validates and returns the user object).
-  3. Returns the verified user_id (UUID string) so endpoints can use it.
-  4. Raises HTTP 401 for missing, malformed, or expired tokens.
+Supabase issues standard JWTs for authenticated users. This module provides:
+
+  CurrentUser — dataclass holding the verified user_id and raw JWT.
+                Endpoints that need rls_client() (read paths) use the jwt
+                field; write paths that use service_client() use user_id.
+
+  require_user — FastAPI dependency that:
+    1. Extracts the Bearer token from the Authorization header.
+    2. Verifies it via Supabase Auth's /user endpoint.
+    3. Returns CurrentUser(user_id, jwt).
+    4. Raises HTTP 401 for missing, malformed, or expired tokens.
 
 Usage in an endpoint:
+    from app.core.security import CurrentUser, require_user
+
     @router.get("/protected")
-    async def protected(user_id: str = Depends(require_user)):
+    async def protected(current_user: Annotated[CurrentUser, Depends(require_user)]):
+        client = rls_client(current_user.jwt)   # RLS-enforced reads
         ...
 """
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -27,11 +36,18 @@ logger = get_logger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 
 
+@dataclass
+class CurrentUser:
+    """Verified caller identity after JWT validation."""
+    user_id: str  # UUID string — use for DB writes and llm_usage logging
+    jwt: str      # raw token — pass to rls_client() for RLS-enforced reads
+
+
 async def require_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str:
+) -> CurrentUser:
     """
-    FastAPI dependency — resolves to the verified user_id string.
+    FastAPI dependency — resolves to a verified CurrentUser.
     Raises 401 if the token is absent, malformed, or rejected by Supabase.
     """
     if credentials is None:
@@ -43,14 +59,12 @@ async def require_user(
 
     token = credentials.credentials
     try:
-        # Use the service client's auth object to verify the token.
-        # This calls GET /auth/v1/user with the JWT as Bearer — Supabase
-        # rejects expired / tampered tokens with a non-2xx response.
+        # Calls GET /auth/v1/user — Supabase rejects expired/tampered tokens.
         response = service_client().auth.get_user(token)
         user = response.user
         if user is None:
             raise ValueError("No user in response")
-        return str(user.id)
+        return CurrentUser(user_id=str(user.id), jwt=token)
     except Exception as exc:
         logger.warning("JWT verification failed: %s", exc)
         raise HTTPException(

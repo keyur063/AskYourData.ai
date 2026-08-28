@@ -11,7 +11,8 @@ python-multipart==0.0.20        # required by FastAPI for multipart/form-data (f
 supabase==2.11.0                # Python client for Supabase (auth verification, storage, DB)
 
 # --- LLM ---
-openai==1.59.6
+openai==1.59.6                  # also used for Groq — its API is OpenAI-schema-compatible,
+                                 # point the client at GROQ_BASE_URL instead of OpenAI's endpoint
 
 # --- Data / query execution ---
 duckdb==1.1.3
@@ -25,6 +26,7 @@ jsonschema==4.23.0               # validates LLM planner output against schemas/
 # --- Utilities ---
 python-dotenv==1.0.1              # loads .env in local dev
 httpx==0.28.1                      # async HTTP client (used by supabase-py and available for adapters)
+cryptography==44.0.0                # Fernet symmetric encryption for per-user stored Groq API keys
 
 # --- Dev / testing (not needed in production image, but keep in this file
 #     for lean scope simplicity; split into requirements-dev.txt later if

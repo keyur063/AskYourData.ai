@@ -33,6 +33,21 @@ create trigger on_auth_user_created
     after insert on auth.users
     for each row execute function public.handle_new_auth_user();
 
+-- Per-user LLM API key (BYOK). Each user brings their own Groq key rather
+-- than the platform providing one shared key — kept in its own table,
+-- separate from public.users, because it's more sensitive than profile
+-- info: unlike name/email, this must NEVER be visible to workspace
+-- co-members, only to the user who owns it. Value is stored encrypted
+-- (application-level, via ENCRYPTION_KEY — see Getting-Started-Lean.md);
+-- the backend decrypts it in memory only when making an LLM call on that
+-- user's behalf, never returns plaintext through the API.
+create table user_api_keys (
+    user_id                 uuid primary key references public.users(id) on delete cascade,
+    groq_api_key_encrypted  bytea not null,
+    groq_model              text,
+    updated_at              timestamptz not null default now()
+);
+
 create table workspaces (
     id              uuid primary key default gen_random_uuid(),
     name            text not null,
@@ -79,9 +94,9 @@ create table files (
     size_bytes          bigint not null,
     row_count           bigint,
     state               file_state not null default 'UPLOADING',
-    error_message       text,
-    uploaded_by         uuid not null references public.users(id),
-    created_at          timestamptz not null default now(),
+    error_message        text,
+    uploaded_by            uuid not null references public.users(id),
+    created_at              timestamptz not null default now(),
     unique (workspace_id, content_hash)
 );
 
@@ -115,29 +130,30 @@ create type query_status as enum ('answered', 'failed');
 
 create table query_history (
     request_id          uuid primary key default gen_random_uuid(),
-    workspace_id        uuid not null references workspaces(id) on delete cascade,
-    user_id             uuid not null references public.users(id),
-    question            text not null,
-    status              query_status not null,
-    query_ir            jsonb,       -- see schemas/query-ir.schema.json
-    generated_sql       text,
-    result_columns      jsonb,
-    result_rows         jsonb,
-    error_message       text,
-    created_at          timestamptz not null default now()
+    workspace_id         uuid not null references workspaces(id) on delete cascade,
+    user_id                uuid not null references public.users(id),
+    question                text not null,
+    status                    query_status not null,
+    query_ir                    jsonb,       -- see schemas/query-ir.schema.json
+    generated_sql                 text,
+    result_columns                   jsonb,
+    result_rows                        jsonb,
+    error_message                        text,
+    created_at                             timestamptz not null default now()
 );
 
 create table llm_usage (
     id                  uuid primary key default gen_random_uuid(),
-    request_id          uuid references query_history(request_id) on delete set null,
-    workspace_id        uuid not null references workspaces(id) on delete cascade,
-    provider            text not null,
-    model               text not null,
-    purpose             text not null,
-    input_tokens        integer,
-    output_tokens       integer,
-    estimated_cost_usd  numeric(10,6),
-    created_at          timestamptz not null default now()
+    request_id           uuid references query_history(request_id) on delete set null,
+    workspace_id           uuid not null references workspaces(id) on delete cascade,
+    user_id                  uuid not null references public.users(id),  -- whose key was used
+    provider                 text not null,
+    model                       text not null,
+    purpose                       text not null,
+    input_tokens                    integer,
+    output_tokens                      integer,
+    estimated_cost_usd                    numeric(10,6),
+    created_at                               timestamptz not null default now()
 );
 
 -- =========================================================================
@@ -181,6 +197,14 @@ create policy users_self_and_co_members on public.users
               and shared_ws.user_id = users.id
         )
     );
+
+-- user_api_keys: strictly self-only, no co-member exception (unlike users
+-- above) — a workspace member's LLM key is never visible to anyone else,
+-- even someone they share a workspace with.
+alter table user_api_keys enable row level security;
+
+create policy user_owns_key on user_api_keys
+    using (user_id = auth.uid());
 
 create policy ws_isolation_workspaces on workspaces
     for select using (public.is_workspace_member(id));

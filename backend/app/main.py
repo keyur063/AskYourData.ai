@@ -6,12 +6,14 @@ the only route implemented at scaffold time; all others are stubs that will
 be filled in session by session per docs/Lean-Backlog.md.
 """
 import uuid
+from typing import Annotated
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.core.logging import get_logger, request_id_ctx
+from app.core.security import CurrentUser, require_user
 
 logger = get_logger(__name__)
 
@@ -59,14 +61,19 @@ async def attach_request_id(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# Routers — imported and mounted here. Stubs for now; each session wires
-# the real implementation per the ticket in docs/Lean-Backlog.md.
+# Routers — uncomment each as its ticket is implemented:
 # ---------------------------------------------------------------------------
-# from app.api import workspaces, files, catalog, query
-# app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
+from app.api import workspaces  # L1.3
+app.include_router(workspaces.router, prefix="/workspaces", tags=["workspaces"])
+
+# from app.api import files    # L2.1
+# from app.api import catalog  # L3.1
+# from app.api import query    # L5.4
+# from app.api import me       # L5.0
 # app.include_router(files.router, tags=["files"])
 # app.include_router(catalog.router, tags=["catalog"])
 # app.include_router(query.router, tags=["query"])
+# app.include_router(me.router, prefix="/me", tags=["me"])
 
 
 # ---------------------------------------------------------------------------
@@ -82,3 +89,14 @@ async def health(request: Request):
             "request_id": request.state.request_id,
         }
     )
+
+
+@app.get("/auth-test", tags=["meta"])
+async def auth_test(current_user: Annotated[CurrentUser, Depends(require_user)]):
+    """
+    L1.2 verification route — protected by JWT.
+
+    Returns 200 + resolved user_id with a valid Supabase-issued token.
+    Returns 401 with an invalid/expired/missing token.
+    """
+    return {"authenticated": True, "user_id": current_user.user_id}

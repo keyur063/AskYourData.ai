@@ -71,11 +71,20 @@ Simple hard limits: max rows scanned, fixed query timeout (e.g. 10s). No LOW/MED
 
 ---
 
-## Session 5 — LLM Planner + Pipeline Wiring
+## Session 5 — Per-User LLM Keys + Planner + Pipeline Wiring
 
-**L5.1 — LLM Provider interface + OpenAI adapter**
-Implement the `LLMProvider` interface and one adapter (OpenAI), with schema-validated output (per Architecture §15, unchanged from full spec — this is cheap to build correctly now and expensive to retrofit).
-*Accept:* a stub planning call round-trips and validates against a placeholder schema; logs to `llm_usage`.
+**L5.0 — Per-user Groq key management**
+Add `user_api_keys` table (already in `db/schema-lean.sql`) if not already applied to your Supabase project. Implement `POST /me/groq-key` (set/update — accepts plaintext in the request body over HTTPS, encrypts before storing, never stores or logs plaintext), `GET /me/groq-key` (returns only whether a key is set, e.g. `{"configured": true, "model": "..."}` — never the key itself), `DELETE /me/groq-key`. Use application-level symmetric encryption (e.g. `cryptography`'s Fernet) with a backend-only `ENCRYPTION_KEY` env var — this key encrypts/decrypts every user's stored Groq key and must never leave the backend or appear in any response.
+*Accept:* a user can set a key, `GET` confirms `configured: true` without ever returning the raw value; the raw value round-trips correctly when decrypted for actual use (test via a real Groq call in L5.1, not by inspecting the DB); a second test user cannot see or affect the first user's key (RLS + `user_owns_key` policy).
+*Refs:* new requirement — per-user BYOK, not in original SRS
+
+**L5.0F — Frontend: API key settings page**
+Simple settings page: input field for the Groq API key (masked/password-style input, never displayed back once saved — show "Key configured ✓" or "No key set" instead), optional model override field, save/remove buttons. Gate the chat interface (Session 6) behind this — if no key is set, the chat UI should show a clear prompt to configure one first rather than letting the user hit a confusing backend error.
+*Accept:* manual E2E — set a key, see "configured" state persist across page reload; remove it, see it revert to "no key set."
+
+**L5.1 — LLM Provider interface + Groq adapter (per-user key)**
+Implement the `LLMProvider` interface and one adapter for Groq. The adapter takes a `user_id`, fetches and decrypts that user's key via L5.0's storage (never a global/platform key), and fails with a clear, specific error — "No Groq API key configured — add one in Settings" — if the user hasn't set one yet, rather than falling back to any shared key. Groq's API is OpenAI-schema-compatible, so the adapter can use the standard `openai` Python client pointed at Groq's base URL rather than a separate SDK. Pick a hosted model with reliable structured-output/JSON-schema support for the planner role — check Groq's current model list, since it changes (added/retired models) more often than most providers. Each user can also set which model they want in `.env`-equivalent per-user settings (the `groq_model` column) rather than one platform-wide model — default to a sensible model if they haven't chosen one. Be aware of the free-tier rate limits (~30 req/min) *per user's own key* when testing — this is naturally somewhat self-limiting since load isn't concentrated on one shared key.
+*Accept:* a stub planning call round-trips using a real per-user key and validates against a placeholder schema; logs to `llm_usage` with `provider="groq"` and the correct `user_id`; a user with no key configured gets the specific "add a key" error, not a generic failure.
 
 **L5.2 — Query planner prompt + schema**
 Author the planning prompt (single-table, no joins, no semantic layer refs) and its output JSON Schema.

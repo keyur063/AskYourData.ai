@@ -47,6 +47,20 @@ class User(BaseModel):
     created_at: datetime
 
 
+class UserApiKeys(BaseModel):
+    """Per-user Groq API key storage (encrypted at rest).
+
+    groq_api_key_encrypted is NEVER exposed through the API — the backend
+    decrypts it in memory only when making a Groq call. Endpoints return
+    only {configured: true/false, model: str | None}.
+    """
+    user_id: UUID
+    # Raw encrypted bytes — not surfaced in API responses.
+    groq_api_key_encrypted: bytes
+    groq_model: Optional[str] = None
+    updated_at: datetime
+
+
 class Workspace(BaseModel):
     id: UUID
     name: str
@@ -112,6 +126,7 @@ class LLMUsage(BaseModel):
     id: UUID
     request_id: Optional[UUID] = None
     workspace_id: UUID
+    user_id: UUID  # whose key was used — NOT NULL in schema
     provider: str
     model: str
     purpose: str

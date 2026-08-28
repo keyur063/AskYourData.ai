@@ -1,5 +1,5 @@
 # Getting Started From Scratch
-## AskYourData.ai — Lean MVP, Supabase + OpenAI + FastAPI + Next.js
+## AskYourData.ai — Lean MVP, Supabase + Groq + FastAPI + Next.js
 
 This assumes nothing exists yet. Ignore any prior scaffold. Read this,
 then work `docs/Lean-Backlog.md` ticket by ticket (L1.1 onward).
@@ -12,7 +12,7 @@ then work `docs/Lean-Backlog.md` ticket by ticket (L1.1 onward).
 Frontend:    Next.js (App Router) + TypeScript + Tailwind
 Backend:     Python 3.11+ / FastAPI
 Database:    Supabase (Postgres + Auth + Storage)
-LLM:         OpenAI, behind an internal provider interface (single adapter for now)
+LLM:         Groq, behind an internal provider interface (single adapter for now)
 Local infra: Docker Compose for the backend/frontend containers only
              (no Postgres/Redis containers — Supabase provides Postgres,
              and lean scope skips Redis/caching entirely)
@@ -21,7 +21,7 @@ Local infra: Docker Compose for the backend/frontend containers only
 Why this combination: Supabase removes three infra components (Postgres,
 auth server, file storage) you'd otherwise have to run and secure yourself.
 FastAPI + Next.js is a standard, well-documented pairing an agent can
-scaffold reliably. OpenAI as a single provider keeps Session 5 (the LLM
+scaffold reliably. Groq as a single provider keeps Session 5 (the LLM
 planner) simple — the `LLMProvider` interface still gets built properly so
 swapping/adding a provider later is a new adapter file, not a rewrite.
 
@@ -40,9 +40,15 @@ Do these in order — each step depends on the one before it.
 
 **Verify before moving on:** sign up a test user via the Supabase Auth UI/API directly, confirm a row appears in `public.users` (the trigger should fire automatically), confirm a workspace you insert manually shows up correctly gated by RLS when queried as that user vs. a second test user.
 
-### Step 2 — OpenAI account
-1. Get an API key from platform.openai.com. Same rule: goes straight into `.env`, never into the agent conversation.
-2. Decide which model to use for the planner (a reasoning-capable model; check OpenAI's current model list rather than assuming — this changes often).
+### Step 2 — Groq: platform config only (end-users bring their own key)
+Users configure their own Groq API key (per L5.0/L5.0F in the backlog) via the app's Settings page — you as the developer don't need a Groq account to build most of this, and no single platform-wide `GROQ_API_KEY` gets stored in `.env`.
+
+What you *do* need to set up now:
+1. `GROQ_BASE_URL` in `backend/.env` — this is the same endpoint for every user (Groq's API URL), platform-wide config, not a secret. Check Groq's current docs for the exact value.
+2. `ENCRYPTION_KEY` in `backend/.env` — the symmetric key that encrypts every end-user's stored Groq key. Generate it once (see the `.env.example` snippet in §4) and keep it safe — this is the one secret in this step that genuinely is yours as the operator, not a per-user credential.
+3. For your own local testing during development (Sessions 5–7), get a personal Groq API key from console.groq.com and enter it through your own app's Settings page once it exists (L5.0F) — the same way any real user would — rather than putting it in `.env`. This exercises the actual BYOK flow instead of a shortcut.
+
+Groq hosts open-weight models only (Llama, Qwen, GPT-OSS, Kimi K2, etc.) — no GPT/Claude/Gemini-class proprietary models. Users should be able to see/pick a model in Settings (L5.0F); default to one with reliable structured-output/JSON-schema support if they haven't chosen. Groq's free tier requires no credit card but has real rate limits (roughly 30 req/min, 6,000 tokens/min, 14,400 req/day per key at time of writing, confirm current numbers) — since each user has their own key, this is naturally per-user rather than a shared bottleneck across your whole app.
 
 ### Step 2.5 — Working without real secrets present
 The agent can build and verify almost everything before real credentials
@@ -54,7 +60,7 @@ ever exist:
   commit and are edited by you directly, outside the agent's tool access if
   your setup allows scoping that.
 - The agent can write and unit-test everything downstream of "a valid
-  Supabase/OpenAI client exists" using mocked clients — Steps 3–5 don't
+  Supabase/Groq client exists" using mocked clients — Steps 3–5 don't
   require live credentials at all.
 - Only the **verification step** at the end of Step 1 (confirming RLS with
   two real test users) and the first live end-to-end query in Session 5
@@ -130,7 +136,8 @@ askyourdata/
 │       │   ├── workspaces.py         # POST/GET /workspaces
 │       │   ├── files.py              # POST /workspaces/{id}/files, GET .../{file_id}
 │       │   ├── catalog.py            # GET /catalog/tables, /catalog/tables/{id}
-│       │   └── query.py              # POST /workspaces/{id}/query, GET .../history
+│       │   ├── query.py              # POST /workspaces/{id}/query, GET .../history
+│       │   └── me.py                 # POST/GET/DELETE /me/groq-key — per-user key management
 │       │
 │       ├── ingestion/
 │       │   ├── validators.py         # CSV file type/size checks (5MB cap for lean scope)
@@ -142,9 +149,12 @@ askyourdata/
 │       │   └── service.py            # reads/writes catalog_tables, catalog_columns
 │       │
 │       ├── llm/
-│       │   ├── provider_interface.py # LLMProvider ABC: generate(purpose, input, schema)
+│       │   ├── provider_interface.py # LLMProvider ABC: generate(user_id, purpose, input, schema)
+│       │   │                        #   — takes user_id so the adapter fetches THAT user's key
+│       │   ├── key_store.py          # encrypt/decrypt/fetch per-user Groq key (uses ENCRYPTION_KEY)
 │       │   ├── adapters/
-│       │   │   └── openai_adapter.py # the one adapter for lean scope
+│       │   │   └── groq_adapter.py   # the one adapter for lean scope — uses the `openai`
+│       │   │                        #   package, base_url=GROQ_BASE_URL, api_key=caller's own key
 │       │   ├── prompts/
 │       │   │   └── query_planning_v1.yaml
 │       │   └── schemas/
@@ -178,9 +188,13 @@ askyourdata/
 │       ├── workspace/[workspaceId]/
 │       │   ├── page.tsx              # upload + dataset preview (Session 3)
 │       │   └── chat/page.tsx         # question -> answer card (Session 6)
+│       ├── settings/
+│       │   └── page.tsx              # per-user Groq API key entry (Session 5, L5.0F)
 │       ├── components/
 │       │   ├── upload/
 │       │   ├── catalog/
+│       │   ├── settings/
+│       │   │   └── ApiKeyForm.tsx    # masked input, "configured ✓" state, save/remove
 │       │   └── chat/
 │       │       └── AnswerCard.tsx    # text + result table + "View SQL"
 │       └── lib/
@@ -211,8 +225,19 @@ SUPABASE_URL=
 SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 DATABASE_URL=
-OPENAI_API_KEY=
-OPENAI_MODEL=
+
+# Groq base URL is platform-wide (same endpoint for everyone); the API key
+# itself is NOT set here — each user provides their own via the Settings
+# page (L5.0), stored encrypted per-user in the database, not in this file.
+GROQ_BASE_URL=
+
+# Symmetric key used to encrypt/decrypt every user's stored Groq API key
+# (see L5.0). Generate once with, e.g.:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# Losing this key means every stored user API key becomes unrecoverable —
+# back it up somewhere safe, separate from the .env file itself.
+ENCRYPTION_KEY=
+
 MAX_QUERY_REPAIR_ATTEMPTS=1
 MAX_FILE_SIZE_MB=5
 MAX_ROWS_SCANNED=1000000
@@ -275,14 +300,14 @@ Once both of those work, start `docs/Lean-Backlog.md` at L1.1.
 ## 6. Secrets Policy (read this before starting any session)
 
 - **Never** type a Supabase key, `service_role` key, database password, or
-  OpenAI API key into the agent conversation, even to "just get it working
+  Groq API key into the agent conversation, even to "just get it working
   faster." The agent doesn't need to see the value to write code that reads
   it from an environment variable.
 - If the agent asks you for a real key/URL directly in chat, decline and
   instead go fill in the `.env`/`.env.local` file yourself, then tell the
   agent "the env file is populated, continue."
 - If a ticket genuinely can't be verified without a live credential (e.g.
-  the RLS test in Step 1, or the first real OpenAI call in Session 5), the
+  the RLS test in Step 1, or the first real Groq API call in Session 5), the
   agent should tell you what it needs set and pause — not prompt you to
   paste the value into chat, and not proceed with a fabricated placeholder
   pretending it succeeded.
