@@ -1,0 +1,6 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$comment": "Output schema for the query planning LLM call. Implemented in L5.2.",
+  "type": "object",
+  "description": "TODO L5.2: define the JSON Schema the planner must output (wraps query-ir.schema.json kind: structured)"
+}

@@ -1,0 +1,8 @@
+# Query planning prompt — v1
+# Implemented in ticket L5.2 (Session 5).
+#
+# This file will contain the system + user prompt template used to
+# instruct the LLM to produce a Query IR (schemas/query-ir.schema.json).
+# Single-table, no joins, structured kind only for lean scope.
+#
+# TODO L5.2: author the prompt

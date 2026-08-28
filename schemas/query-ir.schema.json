@@ -1,0 +1,197 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://askyourdata.ai/schemas/query-ir/1.2.json",
+  "title": "QueryIR",
+  "description": "Versioned intermediate representation produced by the query planner. Consumed only by the Query Validator and BackendCompiler — never executed directly.",
+  "type": "object",
+  "required": ["ir_version", "kind"],
+  "properties": {
+    "ir_version": {
+      "type": "string",
+      "const": "1.2",
+      "description": "Schema version. BackendCompilers must reject IR whose version they do not explicitly support."
+    },
+    "request_id": {
+      "type": "string",
+      "description": "Correlates this IR back to the originating request/trace."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["structured", "needs_clarification", "raw_sql"],
+      "description": "structured = normal compiled query. needs_clarification = planner could not resolve ambiguity. raw_sql = escape hatch for cases structured IR cannot express; subject to stricter validation."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "kind": { "const": "structured" } } },
+      "then": { "$ref": "#/definitions/structuredQuery" }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "needs_clarification" } } },
+      "then": { "$ref": "#/definitions/clarificationRequest" }
+    },
+    {
+      "if": { "properties": { "kind": { "const": "raw_sql" } } },
+      "then": { "$ref": "#/definitions/rawSqlQuery" }
+    }
+  ],
+  "definitions": {
+    "structuredQuery": {
+      "type": "object",
+      "required": ["source", "operation"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "Primary logical table name (catalog-scoped, workspace-scoped)."
+        },
+        "joins": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/join" }
+        },
+        "operation": {
+          "type": "string",
+          "enum": ["aggregation", "filter", "lookup", "preview"],
+          "description": "Top-level operation family. 'preview' covers deterministic row/column listing requests."
+        },
+        "metrics": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/metric" }
+        },
+        "dimensions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Raw column references used as output fields without aggregation."
+        },
+        "group_by": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "filters": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/filter" }
+        },
+        "order_by": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/orderBy" }
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        },
+        "semantic_metric_refs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Named references into the Semantic Layer (e.g. 'Revenue') resolved by the compiler rather than the planner."
+        },
+        "estimated_complexity": {
+          "type": "string",
+          "enum": ["LOW", "MEDIUM", "HIGH"],
+          "description": "Set by the Complexity Guard prior to execution; not set by the planner."
+        }
+      },
+      "additionalProperties": false,
+      "required": ["source", "operation"]
+    },
+    "join": {
+      "type": "object",
+      "required": ["left", "right", "left_column", "right_column", "join_type"],
+      "properties": {
+        "left": { "type": "string" },
+        "right": { "type": "string" },
+        "left_column": { "type": "string" },
+        "right_column": { "type": "string" },
+        "join_type": { "type": "string", "enum": ["inner", "left"] },
+        "relationship_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "metric": {
+      "type": "object",
+      "required": ["column", "aggregation"],
+      "properties": {
+        "column": { "type": "string" },
+        "aggregation": {
+          "type": "string",
+          "enum": ["SUM", "AVG", "COUNT", "COUNT_DISTINCT", "MIN", "MAX"]
+        },
+        "alias": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "filter": {
+      "type": "object",
+      "required": ["column", "operator", "value"],
+      "properties": {
+        "column": { "type": "string" },
+        "operator": {
+          "type": "string",
+          "enum": ["=", "!=", ">", ">=", "<", "<=", "IN", "NOT IN", "BETWEEN", "LIKE", "IS NULL", "IS NOT NULL"]
+        },
+        "value": {
+          "description": "Scalar, array (for IN/BETWEEN), or null (for IS NULL variants)."
+        }
+      },
+      "additionalProperties": false
+    },
+    "orderBy": {
+      "type": "object",
+      "required": ["column", "direction"],
+      "properties": {
+        "column": { "type": "string" },
+        "direction": { "type": "string", "enum": ["ASC", "DESC"] }
+      },
+      "additionalProperties": false
+    },
+    "clarificationRequest": {
+      "type": "object",
+      "required": ["reason", "options"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": ["ambiguous_column", "ambiguous_metric", "unresolvable_filter_value", "low_confidence"]
+        },
+        "candidate_partial_ir": {
+          "description": "Best-effort partial structuredQuery, retained so the user's selection can be merged back in rather than re-planning from scratch.",
+          "$ref": "#/definitions/structuredQuery"
+        },
+        "options": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["label", "resolves_to"],
+            "properties": {
+              "label": { "type": "string" },
+              "resolves_to": {
+                "type": "object",
+                "description": "Key/value patch to apply to candidate_partial_ir once selected."
+              }
+            }
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "rawSqlQuery": {
+      "type": "object",
+      "required": ["sql", "source_tables", "justification"],
+      "properties": {
+        "sql": {
+          "type": "string",
+          "description": "Read-only SQL. Must pass the stricter raw_sql validator (SELECT/WITH only, single statement, no DDL/DML tokens)."
+        },
+        "source_tables": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tables referenced, declared explicitly so schema validation does not require parsing arbitrary SQL to enforce workspace scoping."
+        },
+        "justification": {
+          "type": "string",
+          "description": "Why structured IR could not express this request (e.g. 'requires window function'). Logged for IR-coverage tracking (see Development Plan)."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

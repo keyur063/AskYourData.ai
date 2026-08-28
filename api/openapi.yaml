@@ -1,0 +1,631 @@
+openapi: 3.0.3
+info:
+  title: AskYourData.ai API
+  version: "1.0.0"
+  description: >
+    REST API for AskYourData.ai. Authentication (sign-up, login, session
+    refresh, SSO) is handled entirely by Supabase Auth — the client (frontend)
+    talks to Supabase directly using the Supabase SDK and never calls this
+    backend to obtain a session. This backend only ever verifies the
+    Supabase-issued JWT sent as a bearer token on every request; there are no
+    /auth/* endpoints here. All workspace-scoped endpoints additionally
+    require the caller's role (resolved server-side from workspace
+    membership) to satisfy the permission noted per endpoint. Workspace
+    scoping is enforced both here and at the database layer (Supabase Row
+    Level Security via auth.uid()) — never trust workspace_id from the
+    client alone for anything beyond routing.
+
+servers:
+  - url: https://api.askyourdata.ai/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      summary: Liveness check
+      security: []
+      responses:
+        "200": { description: OK }
+
+  /workspaces:
+    get:
+      summary: List workspaces the current user belongs to
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Workspace" }
+    post:
+      summary: Create a new workspace (creator becomes owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Workspace" }
+
+  /workspaces/{workspace_id}/members:
+    get:
+      summary: List workspace members (any role)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Member" }
+    post:
+      summary: Invite a member (requires owner)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, role]
+              properties:
+                email: { type: string, format: email }
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "201": { description: Invitation created }
+
+  /workspaces/{workspace_id}/members/{user_id}:
+    patch:
+      summary: Change a member's role (requires owner)
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: "#/components/schemas/Role" }
+      responses:
+        "200": { description: Updated }
+    delete:
+      summary: Remove a member (requires owner)
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "204": { description: Removed }
+
+  /workspaces/{workspace_id}/files:
+    get:
+      summary: List uploaded files/datasets (requires analyst+)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FileDataset" }
+    post:
+      summary: Upload a CSV/Excel file (requires editor+)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        "202":
+          description: Accepted; ingestion started (state=UPLOADING/PROCESSING)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileDataset" }
+
+  /workspaces/{workspace_id}/files/{file_id}:
+    get:
+      summary: Get file/dataset status and metadata
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: file_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/FileDataset" }
+    delete:
+      summary: Delete a file/dataset (requires editor+; subject to retention policy)
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: file_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "202": { description: Deletion scheduled }
+
+  /workspaces/{workspace_id}/data-sources:
+    get:
+      summary: List connected external databases
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/DataSourceConnection" }
+    post:
+      summary: Connect an external read-only database (requires editor+)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DataSourceConnectionInput" }
+      responses:
+        "201":
+          description: Created; connection test result included
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DataSourceConnection" }
+
+  /workspaces/{workspace_id}/data-sources/{source_id}/test:
+    post:
+      summary: Test a connection explicitly
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: source_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Test result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+
+  /workspaces/{workspace_id}/catalog/tables:
+    get:
+      summary: List catalog tables (from files and connected DBs)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/CatalogTable" }
+
+  /workspaces/{workspace_id}/catalog/tables/{table_id}:
+    get:
+      summary: Get table detail including columns, stats, PII flags
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: table_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/CatalogTableDetail" }
+
+  /workspaces/{workspace_id}/metrics:
+    get:
+      summary: List semantic-layer metrics/dimensions
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Metric" }
+    post:
+      summary: Define a metric (requires editor+)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MetricInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Metric" }
+
+  /workspaces/{workspace_id}/query:
+    post:
+      summary: >
+        Ask a natural-language question. Requires analyst+ (viewer is rejected
+        with 403 unless the workspace has enabled read-only saved-query viewing).
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                question: { type: string }
+                thread_id:
+                  type: string
+                  format: uuid
+                  description: Omit to start a new conversation thread.
+      responses:
+        "200":
+          description: Answer, or a clarification request
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryResponse" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /workspaces/{workspace_id}/query/{request_id}/clarify:
+    post:
+      summary: Respond to a clarification request for a pending query
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: request_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [selected_option]
+              properties:
+                selected_option: { type: string }
+      responses:
+        "200":
+          description: Answer (resumed pipeline)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/QueryResponse" }
+
+  /workspaces/{workspace_id}/query/history:
+    get:
+      summary: List query history
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: dataset_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: user_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/QueryHistoryEntry" }
+
+  /workspaces/{workspace_id}/usage:
+    get:
+      summary: LLM usage/cost summary (requires editor+)
+      parameters: [ { $ref: "#/components/parameters/WorkspaceId" } ]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UsageSummary" }
+
+  /workspaces/{workspace_id}/audit-log:
+    get:
+      summary: Audit log entries (requires owner)
+      parameters:
+        - { $ref: "#/components/parameters/WorkspaceId" }
+        - name: from
+          in: query
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          schema: { type: string, format: date-time }
+        - name: action
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditLogEntry" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        Supabase-issued JWT, obtained by the frontend directly from Supabase
+        Auth (not from this API). This backend verifies it against Supabase's
+        JWKS and does not issue or refresh tokens itself.
+
+  parameters:
+    WorkspaceId:
+      name: workspace_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              limit: { type: integer }
+              reset_at: { type: string, format: date-time }
+
+  schemas:
+    Role:
+      type: string
+      enum: [owner, editor, analyst, viewer]
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        name: { type: string }
+
+    Workspace:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
+        entitlement:
+          type: object
+          properties:
+            plan: { type: string, enum: [free, pro, enterprise] }
+            queries_per_day: { type: integer }
+            queries_per_minute: { type: integer }
+
+    Member:
+      type: object
+      properties:
+        user: { $ref: "#/components/schemas/User" }
+        role: { $ref: "#/components/schemas/Role" }
+        joined_at: { type: string, format: date-time }
+
+    FileDataset:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        filename: { type: string }
+        state:
+          type: string
+          enum: [UPLOADING, PROCESSING, READY, FAILED, DELETING]
+        dataset_version: { type: string, description: "Content hash" }
+        sheets:
+          type: array
+          items: { type: string }
+        row_count: { type: integer }
+        created_at: { type: string, format: date-time }
+        error_message: { type: string, nullable: true }
+
+    DataSourceConnectionInput:
+      type: object
+      required: [type, host, port, database, username, password]
+      properties:
+        type: { type: string, enum: [postgresql, mysql, sqlserver] }
+        host: { type: string }
+        port: { type: integer }
+        database: { type: string }
+        username: { type: string }
+        password: { type: string, format: password }
+        ssl: { type: boolean, default: true }
+
+    DataSourceConnection:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        host: { type: string }
+        database: { type: string }
+        status: { type: string, enum: [ACTIVE, ERROR, TESTING] }
+        last_schema_refresh_at: { type: string, format: date-time }
+        read_only_verified: { type: boolean }
+
+    CatalogTable:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        source_type: { type: string, enum: [file, database] }
+        row_count: { type: integer }
+        description: { type: string, nullable: true }
+
+    CatalogTableDetail:
+      allOf:
+        - { $ref: "#/components/schemas/CatalogTable" }
+        - type: object
+          properties:
+            columns:
+              type: array
+              items: { $ref: "#/components/schemas/CatalogColumn" }
+            relationships:
+              type: array
+              items: { $ref: "#/components/schemas/Relationship" }
+
+    CatalogColumn:
+      type: object
+      properties:
+        name: { type: string }
+        data_type: { type: string }
+        nullable: { type: boolean }
+        unique_count: { type: integer }
+        null_percentage: { type: number }
+        semantic_type:
+          type: string
+          enum: [identifier, currency, date, datetime, percentage, category, location, email, name, numeric, text, boolean]
+        sample_values:
+          type: array
+          items: {}
+        pii_flag: { type: boolean }
+        pii_category: { type: string, nullable: true }
+
+    Relationship:
+      type: object
+      properties:
+        source_column: { type: string }
+        target_table: { type: string }
+        target_column: { type: string }
+        confidence: { type: number }
+
+    MetricInput:
+      type: object
+      required: [name, definition]
+      properties:
+        name: { type: string }
+        definition: { type: string, description: "e.g. SUM(quantity * unit_price)" }
+        description: { type: string }
+
+    Metric:
+      allOf:
+        - { $ref: "#/components/schemas/MetricInput" }
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            created_by: { type: string, format: uuid }
+
+    QueryResponse:
+      type: object
+      properties:
+        request_id: { type: string, format: uuid }
+        thread_id: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [answered, needs_clarification, failed]
+        answer_text: { type: string, nullable: true }
+        result_table:
+          type: object
+          nullable: true
+          properties:
+            columns: { type: array, items: { type: string } }
+            rows: { type: array, items: { type: array, items: {} } }
+        chart:
+          type: object
+          nullable: true
+          properties:
+            type: { type: string, enum: [line, bar, pie, scatter, histogram] }
+            spec: { type: object }
+        generated_sql: { type: string, nullable: true }
+        query_ir: { type: object, nullable: true, description: "See query-ir.schema.json" }
+        answer_source:
+          type: string
+          enum: [deterministic, llm_generated]
+        clarification:
+          type: object
+          nullable: true
+          properties:
+            reason: { type: string }
+            options:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string }
+                  label: { type: string }
+        error:
+          type: object
+          nullable: true
+          properties:
+            message: { type: string }
+            last_attempted_sql: { type: string, nullable: true }
+
+    QueryHistoryEntry:
+      type: object
+      properties:
+        request_id: { type: string, format: uuid }
+        question: { type: string }
+        user: { $ref: "#/components/schemas/User" }
+        status: { type: string, enum: [answered, failed] }
+        created_at: { type: string, format: date-time }
+        estimated_cost_usd: { type: number, nullable: true }
+
+    UsageSummary:
+      type: object
+      properties:
+        period_start: { type: string, format: date-time }
+        period_end: { type: string, format: date-time }
+        total_llm_calls: { type: integer }
+        total_tokens: { type: integer }
+        total_cost_usd: { type: number }
+        deterministic_query_ratio: { type: number, description: "Fraction of queries answered without any LLM call" }
+
+    AuditLogEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        timestamp: { type: string, format: date-time }
+        user_id: { type: string, format: uuid }
+        action: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        role_at_time: { $ref: "#/components/schemas/Role" }
+        ip: { type: string }
