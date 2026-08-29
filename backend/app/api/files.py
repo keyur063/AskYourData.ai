@@ -28,8 +28,10 @@ from app.core.logging import get_logger
 from app.core.security import CurrentUser, require_user
 from app.core.supabase_client import rls_client, service_client
 from app.ingestion.parser import parse_csv
+from app.ingestion.schema_inference import infer_schema
 from app.ingestion.storage import upload_file
 from app.ingestion.validators import validate_csv_upload
+from app.catalog.service import create_catalog_entry
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -159,10 +161,29 @@ async def upload_csv(
         raise HTTPException(status_code=500, detail="File insert returned no data.")
 
     file_row = result.data[0]
+    file_id = file_row["id"]
     logger.info(
         "file uploaded id=%s ws=%s name=%s rows=%d",
-        file_row["id"], ws_id, filename, row_count,
+        file_id, ws_id, filename, row_count,
     )
+
+    # ── 7. Schema inference + catalog write (L2.2) ───────────────────────
+    try:
+        columns = infer_schema(df)
+        # Derive a logical table name from the filename (strip .csv)
+        table_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+        create_catalog_entry(
+            workspace_id=ws_id,
+            file_id=file_id,
+            table_name=table_name,
+            row_count=row_count,
+            columns=columns,
+        )
+    except Exception as exc:
+        # Catalog failure shouldn't fail the upload — file is already READY.
+        # Log the error but still return the file record.
+        logger.error("catalog write failed file=%s err=%s", file_id, exc)
+
     return file_row
 
 

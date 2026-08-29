@@ -9,24 +9,17 @@
  * Usage:
  *   import { apiClient } from '@/app/lib/api-client'
  *   const workspaces = await apiClient.get('/workspaces')
+ *   await apiClient.uploadFile('/workspaces/123/files', file)
  */
 import { supabase } from './supabase-client'
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000'
 
-async function getAuthHeaders(): Promise<HeadersInit> {
+async function getToken(): Promise<string | null> {
   const {
     data: { session },
   } = await supabase.auth.getSession()
-
-  if (!session?.access_token) {
-    return { 'Content-Type': 'application/json' }
-  }
-
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${session.access_token}`,
-  }
+  return session?.access_token ?? null
 }
 
 async function request<T>(
@@ -34,7 +27,10 @@ async function request<T>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const headers = await getAuthHeaders()
+  const token = await getToken()
+  const headers: HeadersInit = { 'Content-Type': 'application/json' }
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
   const res = await fetch(`${API_URL}${path}`, {
     method,
     headers,
@@ -51,8 +47,32 @@ async function request<T>(
   return res.json() as Promise<T>
 }
 
+async function uploadFile<T>(path: string, file: File): Promise<T> {
+  const token = await getToken()
+  const headers: HeadersInit = {}
+  if (token) headers['Authorization'] = `Bearer ${token}`
+
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const res = await fetch(`${API_URL}${path}`, {
+    method: 'POST',
+    headers,
+    body: formData,
+  })
+
+  if (!res.ok) {
+    const detail = await res.text().catch(() => res.statusText)
+    throw new Error(`Upload ${path} → ${res.status}: ${detail}`)
+  }
+
+  return res.json() as Promise<T>
+}
+
 export const apiClient = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body: unknown) => request<T>('POST', path, body),
-  // Add patch/delete as needed in later tickets
+  delete: <T>(path: string) => request<T>('DELETE', path),
+  uploadFile: <T>(path: string, file: File) => uploadFile<T>(path, file),
 }
+

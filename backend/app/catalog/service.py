@@ -75,5 +75,49 @@ def create_catalog_entry(
     return table_row
 
 
-# TODO L3.1: implement get_tables(workspace_id, jwt) -> list[dict]
-# TODO L3.1: implement get_table(workspace_id, table_id, jwt) -> dict | None
+def get_tables(workspace_id: str, jwt: str) -> list[dict]:
+    """Return all catalog_tables for a workspace (RLS-enforced)."""
+    from app.core.supabase_client import rls_client
+    result = (
+        rls_client(jwt)
+        .table("catalog_tables")
+        .select("*")
+        .eq("workspace_id", workspace_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data
+
+
+def get_table_with_columns(workspace_id: str, table_id: str, jwt: str) -> dict | None:
+    """
+    Return a single catalog_table + its columns (RLS-enforced).
+
+    Returns None if the table doesn't exist or isn't visible to the caller.
+    """
+    from app.core.supabase_client import rls_client
+    client = rls_client(jwt)
+
+    table_result = (
+        client
+        .table("catalog_tables")
+        .select("*")
+        .eq("id", table_id)
+        .eq("workspace_id", workspace_id)
+        .execute()
+    )
+    if not table_result.data:
+        return None
+
+    table_row = table_result.data[0]
+
+    cols_result = (
+        client
+        .table("catalog_columns")
+        .select("*")
+        .eq("table_id", table_id)
+        .order("name")
+        .execute()
+    )
+    table_row["columns"] = cols_result.data
+    return table_row
