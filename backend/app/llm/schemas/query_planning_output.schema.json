@@ -1,6 +1,83 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$comment": "Output schema for the query planning LLM call. Implemented in L5.2.",
+  "$comment": "Output schema for the query planning LLM call. Implemented in L5.2. This is a simplified wrapper that validates the planner's output including the confidence field.",
   "type": "object",
-  "description": "TODO L5.2: define the JSON Schema the planner must output (wraps query-ir.schema.json kind: structured)"
+  "required": ["ir_version", "kind", "source", "operation", "confidence"],
+  "properties": {
+    "ir_version": {
+      "type": "string",
+      "const": "1.2"
+    },
+    "kind": {
+      "type": "string",
+      "const": "structured"
+    },
+    "source": {
+      "type": "string"
+    },
+    "operation": {
+      "type": "string",
+      "enum": ["aggregation", "filter", "lookup", "preview"]
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["column", "aggregation"],
+        "properties": {
+          "column": { "type": "string" },
+          "aggregation": {
+            "type": "string",
+            "enum": ["SUM", "AVG", "COUNT", "COUNT_DISTINCT", "MIN", "MAX"]
+          },
+          "alias": { "type": "string" }
+        }
+      }
+    },
+    "dimensions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "group_by": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "filters": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["column", "operator", "value"],
+        "properties": {
+          "column": { "type": "string" },
+          "operator": {
+            "type": "string",
+            "enum": ["=", "!=", ">", ">=", "<", "<=", "IN", "NOT IN", "BETWEEN", "LIKE", "IS NULL", "IS NOT NULL"]
+          },
+          "value": {}
+        }
+      }
+    },
+    "order_by": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["column", "direction"],
+        "properties": {
+          "column": { "type": "string" },
+          "direction": { "type": "string", "enum": ["ASC", "DESC"] }
+        }
+      }
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 100000
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    }
+  },
+  "additionalProperties": false
 }
