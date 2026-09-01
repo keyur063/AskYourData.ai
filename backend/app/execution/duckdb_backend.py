@@ -158,18 +158,31 @@ def compile_ir(ir: dict[str, Any]) -> str:
 # Execution
 # ---------------------------------------------------------------------------
 
-def execute_query(sql: str, csv_bytes: bytes) -> dict[str, Any]:
+class ComplexityCapError(Exception):
+    """Raised when a query exceeds a complexity cap (row count, timeout)."""
+
+
+def execute_query(
+    sql: str,
+    csv_bytes: bytes,
+    *,
+    max_rows: int | None = None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
     """Execute a compiled SQL query against CSV data using DuckDB.
 
     1. Runs safety_validator.validate_sql_safety(sql) — NEVER skip.
     2. Creates an in-memory DuckDB connection, loads the CSV into a
        table named ``"data"``.
-    3. Executes the SQL.
+    3. **Complexity caps (L4.4):** checks row count against
+       ``max_rows_scanned``; executes the query with a timeout.
     4. Returns ``{"columns": [...], "rows": [...]}``.
 
     Args:
         sql: A SQL string (output of compile_ir).
         csv_bytes: Raw CSV file bytes (same bytes stored in Supabase Storage).
+        max_rows: Override for max rows scanned (defaults to settings).
+        timeout_seconds: Override for query timeout (defaults to settings).
 
     Returns:
         Dict with ``columns`` (list of column name strings) and ``rows``
@@ -177,17 +190,24 @@ def execute_query(sql: str, csv_bytes: bytes) -> dict[str, Any]:
 
     Raises:
         SQLSafetyError: if the SQL fails the safety check.
+        ComplexityCapError: if rows exceed cap or query times out.
         duckdb.Error: on DuckDB execution failures.
     """
     import tempfile
     import os
+    import threading
+
+    from app.core.config import settings
+
+    if max_rows is None:
+        max_rows = settings.max_rows_scanned
+    if timeout_seconds is None:
+        timeout_seconds = settings.query_timeout_seconds
 
     # --- Step 1: safety check (NON-NEGOTIABLE) ---------------------------
     validate_sql_safety(sql)
 
     # --- Step 2: load CSV into in-memory DuckDB --------------------------
-    # Write CSV bytes to a temp file — DuckDB's read_csv_auto needs a file
-    # path (BytesIO is not supported as a parameter in DuckDB 1.1.x).
     fd, tmp_path = tempfile.mkstemp(suffix=".csv")
     try:
         os.write(fd, csv_bytes)
@@ -199,16 +219,48 @@ def execute_query(sql: str, csv_bytes: bytes) -> dict[str, Any]:
                 f'CREATE TABLE "data" AS SELECT * FROM read_csv_auto(\'{tmp_path.replace(chr(92), "/")}\')'
             )
 
-            # --- Step 3: execute ------------------------------------------
-            result = con.execute(sql)
-            columns = [desc[0] for desc in result.description]
-            rows = result.fetchall()
+            # --- Step 2.5: row-count cap (L4.4) --------------------------
+            row_count = con.execute('SELECT COUNT(*) FROM "data"').fetchone()[0]
+            if row_count > max_rows:
+                raise ComplexityCapError(
+                    f"Source data has {row_count:,} rows, which exceeds the "
+                    f"maximum of {max_rows:,} rows. Reduce the dataset size "
+                    f"or increase the row cap."
+                )
 
-            return {
-                "columns": columns,
-                "rows": [list(row) for row in rows],
-            }
+            # --- Step 3: execute with timeout (L4.4) ---------------------
+            result_container: dict[str, Any] = {}
+            error_container: list[Exception] = []
+
+            def _run_query():
+                try:
+                    result = con.execute(sql)
+                    columns = [desc[0] for desc in result.description]
+                    rows = result.fetchall()
+                    result_container["columns"] = columns
+                    result_container["rows"] = [list(row) for row in rows]
+                except Exception as exc:
+                    error_container.append(exc)
+
+            thread = threading.Thread(target=_run_query, daemon=True)
+            thread.start()
+            thread.join(timeout=timeout_seconds)
+
+            if thread.is_alive():
+                # Query is still running — attempt to interrupt via DuckDB
+                con.interrupt()
+                thread.join(timeout=2)
+                raise ComplexityCapError(
+                    f"Query exceeded the {timeout_seconds}s timeout. "
+                    f"Try a simpler query or reduce the dataset size."
+                )
+
+            if error_container:
+                raise error_container[0]
+
+            return result_container
         finally:
             con.close()
     finally:
         os.unlink(tmp_path)
+
