@@ -72,9 +72,9 @@ app.include_router(files.router, tags=["files"])
 from app.api import catalog  # L3.1
 app.include_router(catalog.router, tags=["catalog"])
 
-# from app.api import query    # L5.4
+from app.api import query    # L5.4
 from app.api import me       # L5.0
-# app.include_router(query.router, tags=["query"])
+app.include_router(query.router, tags=["query"])
 app.include_router(me.router, tags=["me"])
 
 
