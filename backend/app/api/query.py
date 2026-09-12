@@ -1,7 +1,7 @@
 """
 Query router — POST /workspaces/{id}/query.
 
-Implemented in ticket L5.4 (Session 5).
+Implemented in tickets L5.4 (Session 5) + L6.1 repair loop (Session 6).
 
 Orchestrates the full pipeline:
   1. Catalog lookup (table + columns for the workspace)
@@ -11,7 +11,8 @@ Orchestrates the full pipeline:
   5. IR → SQL compilation (L4.3)
   6. Safety validation (L4.2, inside execute_query)
   7. DuckDB execution with caps (L4.4)
-  8. Return results + generated SQL
+  8. On execution error → one repair attempt (L6.1)
+  9. Return results + generated SQL
 """
 from __future__ import annotations
 
@@ -31,6 +32,7 @@ from app.ir.validator import validate_ir, IRValidationError
 from app.llm.confidence import check_confidence
 from app.llm.planner import plan_query
 from app.llm.provider_interface import LLMProviderError, LLMValidationError
+from app.llm.repair import attempt_repair, QueryRepairFailed
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -51,6 +53,7 @@ class QueryResponse(BaseModel):
     sql: str
     confidence: float
     ir: dict[str, Any] | None = None
+    repaired: bool = False
 
 
 class FallbackResponse(BaseModel):
@@ -121,8 +124,10 @@ async def query_workspace(
         return FallbackResponse(**fallback)
 
     # --- Step 4: Validate IR (L4.1) ---------------------------------------
+    # Strip 'confidence' — it's a planner field, not in the IR schema.
+    ir_for_validation = {k: v for k, v in ir.items() if k != "confidence"}
     try:
-        validate_ir(ir)
+        validate_ir(ir_for_validation)
     except IRValidationError as exc:
         logger.warning("IR validation failed: %s", exc)
         raise HTTPException(
@@ -173,8 +178,37 @@ async def query_workspace(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=str(exc),
         ) from exc
+    except Exception as exec_err:
+        # --- Step 8: Repair attempt (L6.1) --------------------------------
+        logger.warning("Execution failed, attempting repair: %s", exec_err)
+        try:
+            repaired = attempt_repair(
+                user_id=current_user.user_id,
+                original_ir=ir,
+                original_sql=sql,
+                error_message=str(exec_err),
+                columns_description=columns_description,
+                csv_bytes=csv_bytes,
+            )
+            return QueryResponse(
+                columns=repaired["columns"],
+                rows=repaired["rows"],
+                sql=repaired["sql"],
+                confidence=repaired["confidence"],
+                ir=repaired["ir"],
+                repaired=True,
+            )
+        except QueryRepairFailed as repair_err:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Query failed and could not be repaired.\n"
+                    f"Original error: {repair_err.original_error}\n"
+                    f"Attempted SQL: {repair_err.original_sql}"
+                ),
+            ) from repair_err
 
-    # --- Step 8: Return results -------------------------------------------
+    # --- Step 9: Return results -------------------------------------------
     confidence = ir.get("confidence", 0.0)
     return QueryResponse(
         columns=result["columns"],
