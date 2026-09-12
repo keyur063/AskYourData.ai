@@ -112,3 +112,61 @@ class TestSecurityContract:
         from app.api.me import SetKeyRequest
         req = SetKeyRequest(api_key="gsk_key", model="llama-3.3-70b-versatile")
         assert req.model == "llama-3.3-70b-versatile"
+
+
+# =========================================================================
+# Hex encoding round-trip (store → fetch path)
+# Tests the encoding layer used between store_key() and fetch_key_for_llm().
+# =========================================================================
+
+class TestHexEncoding:
+    """Verify the hex encode/decode path used in store_key / fetch_key_for_llm."""
+
+    def test_hex_round_trip(self):
+        """encrypt → .hex() → bytes.fromhex() → decrypt must round-trip."""
+        plaintext = "gsk_testkey_roundtrip"
+        encrypted = encrypt_key(plaintext)
+        encoded = encrypted.hex()          # store_key path
+        recovered = bytes.fromhex(encoded) # fetch_key_for_llm path
+        assert decrypt_key(recovered) == plaintext
+
+    def test_hex_string_is_even_length(self):
+        """Hex strings are always even length — no padding issues ever."""
+        encrypted = encrypt_key("gsk_any_key")
+        hex_str = encrypted.hex()
+        assert len(hex_str) % 2 == 0
+
+    def test_hex_string_is_valid_hex(self):
+        """Hex output must only contain 0-9a-f characters."""
+        import re
+        encrypted = encrypt_key("gsk_any_key")
+        hex_str = encrypted.hex()
+        assert re.fullmatch(r"[0-9a-f]+", hex_str)
+
+    def test_postgrest_prefix_stripped_correctly(self):
+        """PostgREST may return bytea as \\x<hex>. fetch path must handle both."""
+        plaintext = "gsk_postgrest_prefix_test"
+        encrypted = encrypt_key(plaintext)
+        hex_str = encrypted.hex()
+        postgrest_form = "\\x" + hex_str
+        # fetch_key_for_llm strips the \\x prefix
+        raw = postgrest_form
+        actual_hex = raw[2:] if raw.startswith("\\x") else raw
+        assert decrypt_key(bytes.fromhex(actual_hex)) == plaintext
+
+    def test_base64_regression(self):
+        """Regression: base64 Fernet tokens can have length % 4 != 0 after
+        PostgREST strips padding, causing binascii.Error on b64decode.
+        The hex path has no such constraint — always works.
+        """
+        import base64
+        encrypted = encrypt_key("gsk_regression_test")
+        # Hex must always round-trip cleanly
+        hex_encoded = encrypted.hex()
+        assert bytes.fromhex(hex_encoded) == encrypted
+        # Demonstrate that stripped base64 can fail (the original bug)
+        b64 = base64.b64encode(encrypted).decode("ascii")
+        stripped = b64.rstrip("=")
+        if len(stripped) % 4 != 0:
+            with pytest.raises(Exception):
+                base64.b64decode(stripped, validate=True)

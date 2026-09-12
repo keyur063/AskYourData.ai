@@ -16,8 +16,6 @@ SECURITY contract (must hold everywhere this module is used):
 """
 from __future__ import annotations
 
-import base64
-
 from fastapi import HTTPException, status
 
 from app.core.config import settings
@@ -65,12 +63,15 @@ def store_key(user_id: str, plaintext_key: str, model: str | None = None) -> Non
 
     The plaintext key is encrypted immediately and never stored or
     logged in cleartext.
+
+    Encoding: the Fernet token bytes are stored as a lowercase hex string
+    in the bytea column. Hex is used instead of base64 because PostgREST
+    applies its own hex-prefix encoding to bytea values (\\x...), making
+    a second base64 layer unreliable (padding length issues on round-trip).
     """
     encrypted = encrypt_key(plaintext_key)
-    # Store as base64 text so it survives JSON / PostgREST round-tripping
-    # (bytea columns via PostgREST use base64 with a \\x prefix, which is
-    # fragile; storing as text column would require a schema change).
-    encoded = base64.b64encode(encrypted).decode("ascii")
+    # Hex-encode: deterministic, no padding, no PostgREST bytea conflicts.
+    encoded = encrypted.hex()
 
     row = {
         "user_id": user_id,
@@ -126,8 +127,26 @@ def fetch_key_for_llm(user_id: str) -> tuple[str, str | None]:
             detail="No Groq API key configured — add one in Settings.",
         )
 
-    encrypted_b64: str = resp.data["groq_api_key_encrypted"]
-    encrypted_bytes = base64.b64decode(encrypted_b64)
+    # The value comes back from PostgREST as a string. It may arrive
+    # hex-prefixed (\\x...) if PostgREST treats it as bytea, or as a plain
+    # hex string. Handle both forms defensively.
+    raw: str = resp.data["groq_api_key_encrypted"]
+    if isinstance(raw, str) and raw.startswith("\\x"):
+        # PostgREST bytea hex prefix: strip it and decode
+        hex_str = raw[2:]
+    else:
+        hex_str = raw
+    try:
+        encrypted_bytes = bytes.fromhex(hex_str)
+    except ValueError as exc:
+        logger.error(
+            "Stored key for user_id=%s has unexpected encoding: %r (first 20 chars)",
+            user_id, hex_str[:20],
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Stored API key is corrupted — please re-enter it in Settings.",
+        ) from exc
     plaintext = decrypt_key(encrypted_bytes)
     model = resp.data.get("groq_model")
 
