@@ -1,0 +1,13 @@
+region,product,quantity,price
+North,Widget A,15,9.99
+North,Widget B,8,14.99
+North,Widget A,12,9.99
+South,Widget C,20,4.99
+South,Widget A,5,9.99
+South,Widget B,18,14.99
+East,Widget C,30,4.99
+East,Widget A,7,9.99
+West,Widget B,22,14.99
+West,Widget C,11,4.99
+North,Widget C,3,4.99
+East,Widget B,14,14.99
