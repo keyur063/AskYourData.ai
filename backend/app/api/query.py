@@ -22,6 +22,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
+import re
+
 from app.core.logging import get_logger
 from app.core.security import CurrentUser, require_user
 from app.catalog.service import get_tables, get_table_with_columns
@@ -63,6 +65,25 @@ class FallbackResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Write-intent pre-check — rejects questions that ask for mutations.
+#
+# The safety validator (L4.2) already blocks write keywords in compiled SQL.
+# This layer catches the case where the LLM silently answers a mutation
+# question with a SELECT (e.g. "delete all North rows" → returns those rows
+# instead of refusing). We reject at the question level so the user gets
+# a clear message, not a confusing silent SELECT.
+# ---------------------------------------------------------------------------
+_WRITE_INTENT_KEYWORDS: frozenset[str] = frozenset({
+    "delete", "drop", "insert", "update", "alter", "truncate",
+    "remove", "erase", "destroy", "wipe",
+})
+_WRITE_INTENT_RE = re.compile(
+    r"\b(" + "|".join(re.escape(kw) for kw in sorted(_WRITE_INTENT_KEYWORDS)) + r")\b",
+    re.IGNORECASE,
+)
+
+
+# ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
@@ -77,9 +98,24 @@ async def query_workspace(
 ):
     """Execute a natural-language query against a workspace table.
 
-    Full pipeline: planner → IR validation → SQL compilation → DuckDB execution.
+    Full pipeline: write-intent check → planner → IR validation →
+    SQL compilation → DuckDB execution.
     """
     ws_id = str(workspace_id)
+
+    # --- Step 0: Write-intent check (question-level) ----------------------
+    # Catches mutation requests before the planner runs. The SQL-level
+    # safety validator (L4.2) is the hard safety guarantee; this step
+    # provides consistent UX — a clear refusal rather than a silent SELECT.
+    m = _WRITE_INTENT_RE.search(body.question)
+    if m:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"This platform is read-only — '{m.group(0)}' operations are not "
+                f"supported. Only questions that read or summarise data are allowed."
+            ),
+        )
 
     # --- Step 1: Look up catalog table + columns --------------------------
     table = get_table_with_columns(ws_id, body.table_id, current_user.jwt)
