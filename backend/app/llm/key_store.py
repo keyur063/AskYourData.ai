@@ -127,21 +127,15 @@ def fetch_key_for_llm(user_id: str) -> tuple[str, str | None]:
             detail="No Groq API key configured — add one in Settings.",
         )
 
-    # The value comes back from PostgREST as a string. It may arrive
-    # hex-prefixed (\\x...) if PostgREST treats it as bytea, or as a plain
-    # hex string. Handle both forms defensively.
+    # The value comes back from PostgREST as a string
     raw: str = resp.data["groq_api_key_encrypted"]
-    if isinstance(raw, str) and raw.startswith("\\x"):
-        # PostgREST bytea hex prefix: strip it and decode
-        hex_str = raw[2:]
-    else:
-        hex_str = raw
+    
     try:
-        encrypted_bytes = bytes.fromhex(hex_str)
+        encrypted_bytes = bytes.fromhex(raw)
     except ValueError as exc:
         logger.error(
             "Stored key for user_id=%s has unexpected encoding: %r (first 20 chars)",
-            user_id, hex_str[:20],
+            user_id, raw[:20],
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

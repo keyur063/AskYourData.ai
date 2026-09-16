@@ -32,7 +32,7 @@ from app.llm.provider_interface import (
 logger = get_logger(__name__)
 
 # Default model — can be overridden per-user via the groq_model column.
-_DEFAULT_MODEL = "llama-3.3-70b-versatile"
+_DEFAULT_MODEL = "openai/gpt-oss-120b"
 
 
 class GroqAdapter(LLMProvider):
