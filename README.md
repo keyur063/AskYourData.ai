@@ -1,54 +1,171 @@
 # AskYourData.ai
 
-This repo contains the full spec for AskYourData.ai. **If you're working under
-a limited/constrained agent-session budget, start with the Lean MVP path
-below — it's the recommended default.** The full spec remains the reference
-for scaling back up later.
+Upload a CSV, ask questions about it in plain English, get back a validated
+answer with the SQL that produced it. Built as a lean, safety-first MVP —
+natural language is never trusted directly against your data; every
+question is compiled into a structured, validated query before anything
+executes.
 
-## Lean MVP (recommended starting point)
+## What this actually does
 
-1. `docs/Lean-MVP-Scope.md` — what's in/out of scope for the reduced build, and why
-2. `docs/Lean-Backlog.md` — session-sized tickets (7 sessions, commit after each)
-3. `db/schema-lean.sql` — the 8-table schema this scope uses
+1. Upload a CSV — schema (columns, types) is inferred automatically.
+2. Ask a question in plain English (e.g. "how many students enrolled in
+   2025?").
+3. A Groq-hosted LLM (your own API key, not a shared platform key) plans
+   the query as a structured intermediate representation — never raw SQL
+   generated blindly.
+4. That plan is validated: schema-checked, and explicitly blocked if it
+   contains any write/delete/update/drop-style intent — read-only, always.
+5. The validated plan compiles to SQL and runs against your data via DuckDB.
+6. You get a plain-language answer, a result table, and the exact SQL that
+   ran — full transparency, nothing hidden.
 
-Everything else below is the full-scope reference — read it for context, but
-build against the Lean docs first.
+Every user brings their own Groq API key (encrypted at rest, never
+returned by the API once saved). Multi-tenant workspace isolation is
+enforced by PostgreSQL Row-Level Security at the database layer, not just
+application code.
 
-## Full spec (reference / where to scale back up to later)
+## Tech stack
 
-If you are a coding agent starting work here, read in this order:
+- **Backend:** Python / FastAPI
+- **Frontend:** Next.js (App Router) / TypeScript
+- **Database & Auth:** Supabase (PostgreSQL + Row-Level Security + Auth)
+- **Query execution:** DuckDB
+- **LLM:** Groq (OpenAI-compatible API), per-user key, encrypted with Fernet
 
-1. `docs/PRD.md` — what we're building and why
-2. `docs/SRS.md` — functional/non-functional requirements (FR-xxx IDs used everywhere else)
-3. `docs/System-Architecture.md` — components, data flow, security architecture
-4. `docs/UIUX.md` — screens and interaction patterns
-5. `docs/Repo-Scaffold.md` — exact target directory layout and dev environment setup (Supabase-based)
-6. `docs/Development-Plan.md` — phases and team/timeline context
-7. `docs/Backlog.md` — full-scope, phase-ordered tickets. Each references an SRS requirement ID and states an accept/reject check.
+## Project structure
 
-Machine-readable source-of-truth files (referenced throughout the docs above,
-do not duplicate or fork these — import/reference them):
+```text
+backend/app/
+├── api/                    # FastAPI routes
+│   ├── workspaces.py       # workspace CRUD
+│   ├── files.py            # CSV upload
+│   ├── catalog.py          # schema/table inspection
+│   ├── query.py            # natural language query endpoint
+│   └── me.py                # per-user Groq API key management
+├── core/
+│   ├── config.py            # env-driven settings
+│   ├── security.py          # Supabase JWT verification
+│   └── supabase_client.py   # Supabase client wrapper
+├── ingestion/                # CSV parsing, validation, schema inference
+├── catalog/                  # schema/table metadata service
+├── ir/
+│   └── validator.py          # validates the LLM's query plan against a schema
+├── execution/
+│   ├── duckdb_backend.py     # compiles the validated plan to SQL, runs it
+│   └── safety_validator.py   # rejects any write/DDL intent — the core
+│                              #   safety boundary of the whole system
+├── llm/
+│   ├── provider_interface.py # abstract LLM provider contract
+│   ├── adapters/groq_adapter.py
+│   ├── key_store.py           # per-user encrypted API key storage
+│   ├── planner.py             # turns a question into a structured plan
+│   ├── confidence.py          # low-confidence fallback (asks to rephrase
+│   │                          #   instead of guessing)
+│   └── repair.py               # retries a failed query once with the error
+│                                #   fed back to the LLM
+└── query_pipeline/
+    └── orchestrator.py         # wires the whole flow above together
 
-- `schemas/query-ir.schema.json` — the Query IR contract (planner ↔ execution)
-- `api/openapi.yaml` — the full REST API contract
-- `db/schema.sql` — PostgreSQL DDL including row-level security policies
+frontend/app/
+├── login/page.tsx
+├── dashboard/page.tsx         # workspace list
+├── workspace/[id]/page.tsx    # upload, schema preview, chat interface
+├── settings/page.tsx          # Groq API key management
+└── lib/
+    ├── supabase-client.ts
+    └── api-client.ts
+```
 
-`docs/Project-Description.md` is the original narrative spec these were derived
-from — useful for context, superseded by the documents above for anything
-where they disagree.
+## Running it locally
 
-## Where to write code
+### 1. Prerequisites
+- Python 3.11+
+- Node.js
+- A Supabase project (free tier is fine) with the schema in
+  `db/schema-lean.sql` applied
+- A Groq API key from [console.groq.com](https://console.groq.com) — each
+  user of the app provides their own; you'll need one for your own testing
 
-Generate backend code into `backend/` and frontend code into `frontend/`
-following the layout in `docs/Repo-Scaffold.md` exactly — it specifies which
-module each responsibility belongs in. Do not invent an alternate structure.
+### 2. Backend setup
 
-## Hard constraints (see SRS + Architecture for rationale)
+```bash
+cd backend
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-- No direct LLM vendor SDK calls outside `backend/app/llm/adapters/`.
-- No write-capable SQL (`DROP/DELETE/UPDATE/INSERT/ALTER/TRUNCATE`) anywhere
-  in `backend/app/execution/` or produced by `backend/app/ir/`.
-- Every workspace-scoped DB table must have an RLS policy — see `db/schema.sql`.
-- Every new endpoint needs a contract test against `api/openapi.yaml`.
-- Every IR-touching change runs the evaluation benchmark before merge.
-- Every execution-path change runs the adversarial suite before merge.
+Copy `.env.example` to `.env` and fill in:
+```text
+SUPABASE_URL=
+SUPABASE_ANON_KEY=
+SUPABASE_SERVICE_ROLE_KEY=
+DATABASE_URL=
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+ENCRYPTION_KEY=
+MAX_QUERY_REPAIR_ATTEMPTS=1
+MAX_FILE_SIZE_MB=5
+MAX_ROWS_SCANNED=1000000
+QUERY_TIMEOUT_SECONDS=10
+```
+
+Generate `ENCRYPTION_KEY` once (used to encrypt every user's stored Groq
+key — back it up somewhere safe, losing it makes stored keys
+unrecoverable):
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+Run it:
+```bash
+uvicorn app.main:app --reload
+```
+
+Check it's alive: `curl http://localhost:8000/health`
+
+### 3. Frontend setup
+
+```bash
+cd frontend
+npm install
+```
+
+Copy `.env.local.example` to `.env.local` and fill in:
+```text
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_ANON_KEY=
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
+
+Run it:
+```bash
+npm run dev
+```
+
+Visit `http://localhost:3000`.
+
+### 4. First use
+
+1. Sign up / log in.
+2. Go to **Settings**, add your Groq API key.
+3. Create a workspace, upload a CSV.
+4. Ask a question about it in the chat interface.
+
+## Security properties (verified, not just claimed)
+
+These were tested directly against a running instance, not assumed from
+code review alone:
+
+- **No write operations ever execute** — delete/update/drop/insert/alter
+  intent is explicitly detected and blocked before the query planner even
+  runs.
+- **Prompt injection via data is inert** — cell values from uploaded CSVs
+  are never interpolated into the LLM's instructions; only column
+  names/types are. A cell containing text like "ignore previous
+  instructions" is returned as plain data, never followed.
+- **Cross-workspace access is blocked at the database layer** — enforced
+  by PostgreSQL RLS, confirmed by replaying a real request from one user's
+  session against another user's workspace ID and getting a 404, not data.
+- **API keys are encrypted at rest** and never returned by any endpoint
+  once saved.

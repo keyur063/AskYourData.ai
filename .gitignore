@@ -18,3 +18,7 @@ out/
 
 # OS
 .DS_Store
+
+frontend/AGENTS.md
+frontend/CLAUDE.md
+docs/
